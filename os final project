@@ -1,0 +1,248 @@
+#include <iostream>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <cstring>
+#include <windows.h>
+#include <string>
+#include <condition_variable>
+using namespace std;
+
+enum class ErrorCode {
+    Success,
+    ProcessAlreadyExists,
+    ProcessNotFound
+};
+
+class Process {
+public:
+    int pid;
+    int arrivalTime;
+    int burstTime;
+    int remainingtime;
+    int priority;
+    string status;
+
+    Process(int pid, int arrivalTime, int burstTime, int priority, const string& status)
+        : pid(pid), arrivalTime(arrivalTime), burstTime(burstTime), remainingtime(burstTime), priority(priority), status(status) {}
+
+    void printDetails() const {
+        cout << "Process(ID=" << pid
+             << ", Arrival=" << arrivalTime
+             << ", Burst=" << burstTime
+             << ", Remaining=" << remainingtime
+             << ", Priority=" << priority
+             << ", Status=" << status << ")" << endl;
+    }
+};
+
+struct Communication {
+    int from;
+    int to;
+    string content;
+
+    Communication(int from, int to, const string& content);
+};
+
+Communication::Communication(int from, int to, const string& content)
+    : from(from), to(to), content(content) {}
+
+class CommunicationQueue {
+public:
+    CommunicationQueue() {}
+
+    void pushMessage(const Communication& msg) {
+        lock_guard<mutex> lock(mtx);
+        msgQueue.push_back(msg);
+    }
+
+    Communication popMessage() {
+        lock_guard<mutex> lock(mtx);
+        Communication msg = msgQueue.front();
+        msgQueue.pop_front();
+        return msg;
+    }
+
+    void displayQueue() const {
+        lock_guard<mutex> lock(mtx);
+        cout << "Message Queue:\n";
+        for (const auto& msg : msgQueue) {
+            cout << "From: " << msg.from << ", To: " << msg.to << ", Message: " << msg.content << endl;
+        }
+    }
+
+private:
+    list<Communication> msgQueue;
+    mutable mutex mtx;
+};
+
+class Scheduler {
+public:
+    ErrorCode createProcess(int pid, int arrivalTime, int burstTime, int priority, const string& status = "new") {
+        for (const auto& proc : processes) {
+            if (proc->pid == pid) {
+                return ErrorCode::ProcessAlreadyExists;
+            }
+        }
+        auto proc = make_shared<Process>(pid, arrivalTime, burstTime, priority, status);
+        processes.push_back(proc);
+        readyQueue.push_back(proc);
+        return ErrorCode::Success;
+    }
+
+    ErrorCode terminateProcess(int pid) {
+        for (auto& proc : processes) {
+            if (proc->pid == pid) {
+                proc->status = "terminated";
+                return ErrorCode::Success;
+            }
+        }
+        return ErrorCode::ProcessNotFound;
+    }
+
+    void showAllProcesses() const {
+        for (const auto& proc : processes) {
+            proc->printDetails();
+        }
+    }
+
+    void sendCommunication(int from, int to, const string& content) {
+        Communication msg(from, to, content);
+        msgQueue.pushMessage(msg);
+    }
+
+    void receiveCommunications(int pid) {
+        while (true) {
+            Communication msg = msgQueue.popMessage();
+            if (msg.to == pid) {
+                cout << "Process " << pid << " received message from Process " << msg.from << ": " << msg.content << endl;
+            }
+        }
+    }
+
+    void executeSJF() {
+        auto compare = [](const shared_ptr<Process>& a, const shared_ptr<Process>& b) {
+            if (a->burstTime != b->burstTime) {
+                return a->burstTime > b->burstTime;
+            }
+            return a->arrivalTime > b->arrivalTime;
+        };
+        priority_queue<shared_ptr<Process>, list<shared_ptr<Process>>, decltype(compare)> pq(compare);
+
+        cout << "Starting Shortest Job First Scheduling:\n";
+
+        for (const auto& proc : processes) {
+            if (proc->status != "terminated") {
+                pq.push(proc);
+            }
+        }
+
+        while (!pq.empty()) {
+            auto proc = pq.top();
+            pq.pop();
+
+            if (proc->status != "terminated") {
+                proc->status = "running";
+                proc->printDetails();
+
+                proc->remainingtime = 0;
+                proc->status = "terminated";
+            }
+        }
+    }
+
+    void executeRoundRobin(int timeSlice) {
+        list<shared_ptr<Process>> rrQueue;
+
+        for (const auto& proc : processes) {
+            if (proc->status != "terminated") {
+                rrQueue.push_back(proc);
+            }
+        }
+
+        cout << "Starting Round Robin Scheduling:\n";
+
+        while (!rrQueue.empty()) {
+            auto proc = rrQueue.front();
+            rrQueue.pop_front();
+
+            if (proc->status != "terminated") {
+                proc->status = "running";
+                proc->printDetails();
+
+                int execTime = min(timeSlice, proc->remainingtime);
+                proc->remainingtime -= execTime;
+
+                if (proc->remainingtime > 0) {
+                    proc->status = "waiting";
+                    rrQueue.push_back(proc);
+                } else {
+                    proc->status = "terminated";
+                }
+            }
+        }
+    }
+
+    void showCommunicationQueue() {
+        msgQueue.displayQueue();
+    }
+
+private:
+    list<shared_ptr<Process>> processes;
+    list<shared_ptr<Process>> readyQueue;
+    CommunicationQueue msgQueue;
+};
+
+int main() {
+    Scheduler scheduler;
+
+    // Add processes
+    if (scheduler.createProcess(1, 0, 6, 1) != ErrorCode::Success) {
+        cout << "Error: Process with ID 1 already exists." << endl;
+        return 1;
+    }
+    if (scheduler.createProcess(2, 1, 5, 4) != ErrorCode::Success) {
+        cout << "Error: Process with ID 2 already exists." << endl;
+        return 1;
+    }
+    if (scheduler.createProcess(3, 2, 3, 2) != ErrorCode::Success) {
+        cout << "Error: Process with ID 3 already exists." << endl;
+        return 1;
+    }
+    if (scheduler.createProcess(4, 3, 4, 3) != ErrorCode::Success) {
+        cout << "Error: Process with ID 4 already exists." << endl;
+        return 1;
+    }
+
+    // Display all processes before scheduling
+    cout << "Initial List of Processes:\n";
+    scheduler.showAllProcesses();
+     // Send messages between processes
+    scheduler.sendCommunication(2, 3, "Greetings from Process 2 to Process 3!");
+    scheduler.sendCommunication(3, 1, "Hello from Process 3 to Process 1!");
+
+    // Display the message queue
+    cout << "Message Queue State:\n";
+    scheduler.showCommunicationQueue();
+
+    // Ask user for scheduling algorithm choice
+    cout << "Select the scheduling algorithm (SJF or RR): ";
+    string choice;
+    cin >> choice;
+
+    // Execute the chosen algorithm
+    if (choice == "SJF") {
+        scheduler.executeSJF();
+    } else if (choice == "RR") {
+        // Ask for time slice
+        int timeSlice;
+        cout << "Enter the time slice for Round Robin: ";
+        cin >> timeSlice;
+        scheduler.executeRoundRobin(timeSlice);
+    } else {
+        cout << "Invalid choice. Exiting..." << endl;
+        return 1;
+    }
+
+    return 0;
+}
